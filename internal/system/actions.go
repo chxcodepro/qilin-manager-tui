@@ -24,10 +24,37 @@ type NetworkConfig struct {
 	DNS        string
 }
 
+type kylinVersion struct {
+	name    string
+	code    string
+	partner string
+}
+
+func detectKylinVersion() kylinVersion {
+	v := kylinVersion{
+		name:    "银河麒麟 V10",
+		code:    "10.1",
+		partner: "juniper",
+	}
+
+	prettyName := parseOSRelease("PRETTY_NAME")
+	if prettyName != "" {
+		v.name = prettyName
+	}
+
+	codename := strings.TrimSpace(parseOSRelease("VERSION_CODENAME"))
+	if codename != "" {
+		v.partner = codename
+	}
+
+	return v
+}
+
 func OfficialSourceAction() Action {
+	ver := detectKylinVersion()
 	lines := []string{
-		"deb http://archive.kylinos.cn/kylin/KYLIN-ALL 10.1 main restricted universe multiverse",
-		"deb http://archive.kylinos.cn/kylin/partner juniper main",
+		fmt.Sprintf("deb http://archive.kylinos.cn/kylin/KYLIN-ALL %s main restricted universe multiverse", ver.code),
+		fmt.Sprintf("deb http://archive.kylinos.cn/kylin/partner %s main", ver.partner),
 	}
 
 	script := fmt.Sprintf(`set -e
@@ -39,8 +66,9 @@ cat > /etc/apt/sources.list <<'EOF'
 EOF
 apt-get update`, strings.Join(lines, "\n"))
 
+	title := fmt.Sprintf("切换到%s官方源", ver.name)
 	return Action{
-		Title:   "切换到银河麒麟 V10 官方源",
+		Title:   title,
 		Confirm: "会备份当前 sources.list，并切换到内置官方源模板，继续吗？",
 		Command: buildRootCommand(script),
 		Preview: "cp sources.list{,.bak} && 写入官方源 && apt-get update",

@@ -125,7 +125,7 @@ func (m model) viewOverview(width int) string {
 	table := cardStyle.Width(width).Render(
 		highlightStyle.Render("网卡配置表") + "\n" +
 			"光标可直接选中单元格；Enter 开始编辑；Ctrl+S 保存当前行\n" +
-			renderNetworkTable(m),
+			renderNetworkTable(m, width-6),
 	)
 
 	return lipgloss.JoinVertical(lipgloss.Left, top, table)
@@ -196,6 +196,12 @@ func (m model) viewPackages(width int) string {
 	}
 	nameW += 2
 	pkgW += 1
+	statusW := 6
+	lineOverhead := 4 + 1 + 1 + 1
+	descW := (width - 6) - nameW - pkgW - statusW - lineOverhead
+	if descW < 6 {
+		descW = 6
+	}
 
 	appLines := make([]string, 0, len(visibleApps)+2)
 
@@ -205,7 +211,7 @@ func (m model) viewPackages(width int) string {
 		appLines = append(appLines, highlightStyle.Render("搜索结果")+" (Esc 返回默认列表)")
 	}
 
-	appLines = append(appLines, "    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", 6)+" 说明")
+	appLines = append(appLines, "    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", statusW)+" 说明")
 	for idx, app := range visibleApps {
 		selected := " "
 		if m.selectedApps[app.Package] {
@@ -217,7 +223,8 @@ func (m model) viewPackages(width int) string {
 			installed = "已安装"
 		}
 
-		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, 6) + " " + app.Description
+		desc := truncateText(app.Description, descW)
+		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, statusW) + " " + desc
 		if idx == m.appCursor {
 			line = selectedRowStyle.Render(line)
 		}
@@ -319,9 +326,48 @@ func renderPackageState(state system.PackageSection) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderNetworkTable(m model) string {
+func renderNetworkTable(m model, availWidth int) string {
 	headers := []string{"网卡", "状态", "模式", "IP", "掩码", "网关", "DNS", "连接"}
-	widths := []int{8, 8, 6, 15, 15, 15, 18, 12}
+
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = displayWidth(h)
+	}
+	for _, draft := range m.networkDrafts {
+		values := []string{draft.Device, draft.State, draft.Mode, draft.Address, draft.Mask, draft.Gateway, draft.DNS, draft.Connection}
+		for i, v := range values {
+			if w := displayWidth(v); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	for i := range widths {
+		widths[i] += 2
+	}
+
+	separators := len(widths) - 1
+	total := separators
+	for _, w := range widths {
+		total += w
+	}
+	if availWidth > 0 && total > availWidth {
+		usable := availWidth - separators
+		contentTotal := total - separators
+		for i := range widths {
+			widths[i] = max(widths[i]*usable/contentTotal, 4)
+		}
+	} else if availWidth > 0 && total < availWidth {
+		extra := availWidth - total
+		for extra > 0 {
+			for i := range widths {
+				if extra <= 0 {
+					break
+				}
+				widths[i]++
+				extra--
+			}
+		}
+	}
 
 	lines := []string{renderTableRow(headers, widths, -1, -1, true)}
 	if len(m.networkDrafts) == 0 {

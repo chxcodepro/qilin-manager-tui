@@ -18,16 +18,8 @@
 安装并启动：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chxcodepro/qilin-manager-tui/main/scripts/install.sh | bash
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/chxcodepro/qilin-manager-tui/main/scripts/install.sh | bash
 ```
-
-直接下载后启动：
-
-```bash
-curl -L https://github.com/chxcodepro/qilin-manager-tui/releases/latest/download/qilin-manager-tui_linux_amd64.tar.gz | tar -xz && ./qilin-manager-tui
-```
-
-`arm64` 把命令里的 `amd64` 换成 `arm64` 就行。
 
 ## 页面说明
 
