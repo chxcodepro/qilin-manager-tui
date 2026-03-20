@@ -20,6 +20,7 @@ const (
 	sectionDisk
 	sectionPerf
 	sectionPackage
+	sectionMaintain
 )
 
 const (
@@ -36,8 +37,19 @@ type snapshotMsg struct {
 }
 
 type actionDoneMsg struct {
-	title string
-	err   error
+	title   string
+	command string
+	output  string
+	err     error
+}
+
+type consoleEntry struct {
+	Time    time.Time
+	Title   string
+	Command string
+	Output  string
+	Err     error
+	Done    bool
 }
 
 type tickMsg time.Time
@@ -89,7 +101,12 @@ type model struct {
 	showSearch    bool
 	snapshot      system.Snapshot
 	status        string
-	confirming    *pendingAction
+	confirming       *pendingAction
+	consoleLogs      []consoleEntry
+	consoleExpanded  bool
+	consoleCursor    int
+	maintainCursor   int
+	perfCursor       int
 }
 
 func Run(version string) error {
@@ -144,6 +161,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionDoneMsg:
 		m.confirming = nil
+		// 更新控制台日志中最后一条匹配的 entry
+		for i := len(m.consoleLogs) - 1; i >= 0; i-- {
+			if !m.consoleLogs[i].Done && m.consoleLogs[i].Title == msg.title {
+				m.consoleLogs[i].Output = msg.output
+				m.consoleLogs[i].Err = msg.err
+				m.consoleLogs[i].Done = true
+				break
+			}
+		}
 		if msg.err != nil {
 			m.status = fmt.Sprintf("%s失败: %v", msg.title, msg.err)
 		} else {
@@ -168,7 +194,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.status = "正在执行: " + m.confirming.action.Title
-				return m, execActionCmd(m.confirming.action)
+				m.consoleLogs = append(m.consoleLogs, consoleEntry{
+					Time:    time.Now(),
+					Title:   m.confirming.action.Title,
+					Command: m.confirming.action.Command,
+					Done:    false,
+				})
+				cmd := execActionCmd(m.confirming.action)
+				m.confirming = nil
+				return m, cmd
 			case "n", "N", "esc":
 				m.confirming = nil
 				m.status = "已取消操作"
@@ -208,6 +242,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "已隐藏帮助"
 			}
 			return m, nil
+		case "`":
+			m.consoleExpanded = !m.consoleExpanded
+			return m, nil
 		}
 
 		switch m.active {
@@ -217,6 +254,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDisk(msg)
 		case sectionPackage:
 			return m.updatePackages(msg)
+		case sectionPerf:
+			return m.updatePerf(msg)
+		case sectionMaintain:
+			return m.updateMaintain(msg)
 		default:
 			return m, nil
 		}
@@ -227,14 +268,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) prevSection() {
 	if m.active == sectionOverview {
-		m.active = sectionPackage
+		m.active = sectionMaintain
 		return
 	}
 	m.active--
 }
 
 func (m *model) nextSection() {
-	if m.active == sectionPackage {
+	if m.active == sectionMaintain {
 		m.active = sectionOverview
 		return
 	}
@@ -419,21 +460,6 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
-	case "o":
-		m.confirming = &pendingAction{action: system.OfficialSourceAction()}
-		return m, nil
-	case "b":
-		m.confirming = &pendingAction{action: system.RestoreSourceAction()}
-		return m, nil
-	case "u":
-		m.confirming = &pendingAction{action: system.AptUpdateAction()}
-		return m, nil
-	case "c":
-		m.confirming = &pendingAction{action: system.CleanAptCacheAction()}
-		return m, nil
-	case "g":
-		m.confirming = &pendingAction{action: system.CleanLogsAction()}
-		return m, nil
 	case "i":
 		packages := m.selectedPackageNames()
 		if len(packages) == 0 {
@@ -492,8 +518,14 @@ func (m model) View() string {
 
 	header := m.viewHeader()
 	body := m.viewBody()
+	console := m.viewConsole(max(m.width-4, 60))
 	footer := m.viewFooter()
-	content := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	parts := []string{header, body}
+	if console != "" {
+		parts = append(parts, console)
+	}
+	parts = append(parts, footer)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	if m.netDialog.Active {
 		return overlay(content, m.viewNetworkDialog())
@@ -554,10 +586,11 @@ func tickCmd() tea.Cmd {
 }
 
 func execActionCmd(action system.Action) tea.Cmd {
-	cmd := exec.Command("sh", "-lc", action.Command)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return actionDoneMsg{title: action.Title, err: err}
-	})
+	return func() tea.Msg {
+		cmd := exec.Command("sh", "-lc", action.Command)
+		out, err := cmd.CombinedOutput()
+		return actionDoneMsg{title: action.Title, command: action.Command, output: string(out), err: err}
+	}
 }
 
 func overlay(base string, dialog string) string {
@@ -664,4 +697,65 @@ func (m model) currentNetworkAction() (system.Action, error) {
 		Gateway:    draft.Gateway,
 		DNS:        draft.DNS,
 	})
+}
+
+type maintainAction struct {
+	Title   string
+	Preview string
+	Action  func() system.Action
+}
+
+func (m model) maintainActions() []maintainAction {
+	return []maintainAction{
+		{"切换官方源", "cp sources.list{,.bak} && 写入官方源 && apt-get update", func() system.Action { return system.OfficialSourceAction() }},
+		{"恢复备份源", "cp sources.list.bak sources.list && apt-get update", func() system.Action { return system.RestoreSourceAction() }},
+		{"更新软件索引", "apt-get update", func() system.Action { return system.AptUpdateAction() }},
+		{"清理包缓存", "apt-get clean", func() system.Action { return system.CleanAptCacheAction() }},
+		{"清理日志", "truncate /var/log/*.log", func() system.Action { return system.CleanLogsAction() }},
+		{"升级所有可升级软件", "apt-get upgrade -y", func() system.Action { return system.UpgradeAllAction() }},
+	}
+}
+
+func (m model) updateMaintain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	actions := m.maintainActions()
+	switch msg.String() {
+	case "up", "k":
+		if m.maintainCursor > 0 {
+			m.maintainCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.maintainCursor < len(actions)-1 {
+			m.maintainCursor++
+		}
+		return m, nil
+	case "enter":
+		if m.maintainCursor >= 0 && m.maintainCursor < len(actions) {
+			m.confirming = &pendingAction{action: actions[m.maintainCursor].Action()}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) updatePerf(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.perfCursor > 0 {
+			m.perfCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.perfCursor < len(m.snapshot.Perf.Top)-1 {
+			m.perfCursor++
+		}
+		return m, nil
+	case "x":
+		if len(m.snapshot.Perf.Top) > 0 && m.perfCursor >= 0 && m.perfCursor < len(m.snapshot.Perf.Top) {
+			proc := m.snapshot.Perf.Top[m.perfCursor]
+			m.confirming = &pendingAction{action: system.KillProcessAction(proc.PID)}
+		}
+		return m, nil
+	}
+	return m, nil
 }

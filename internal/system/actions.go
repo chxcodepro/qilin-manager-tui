@@ -139,6 +139,24 @@ func InstallAppsAction(packages []string) Action {
 	}
 }
 
+func KillProcessAction(pid string) Action {
+	return Action{
+		Title:   fmt.Sprintf("终止进程 %s", pid),
+		Confirm: fmt.Sprintf("会执行 kill -15 %s 终止该进程，继续吗？", pid),
+		Command: buildRootCommand("kill -15 " + shellQuote(pid)),
+		Preview: "kill -15 " + pid,
+	}
+}
+
+func UpgradeAllAction() Action {
+	return Action{
+		Title:   "升级所有可升级软件",
+		Confirm: "会执行 apt-get upgrade -y，继续吗？",
+		Command: buildRootCommand("apt-get upgrade -y"),
+		Preview: "apt-get upgrade -y",
+	}
+}
+
 func UninstallAppsAction(packages []string) Action {
 	quoted := make([]string, 0, len(packages))
 	for _, pkg := range packages {

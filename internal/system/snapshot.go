@@ -28,7 +28,10 @@ type ProcessItem struct {
 
 type AppState struct {
 	AppInfo
-	Installed bool
+	Installed    bool
+	InstalledVer string
+	CandidateVer string
+	Upgradable   bool
 }
 
 type SystemSection struct {
@@ -452,6 +455,7 @@ func SearchPackages(keyword string) []AppState {
 		if pkg == "" {
 			continue
 		}
+		iv, cv := packageVersions(ctx, pkg)
 		results = append(results, AppState{
 			AppInfo: AppInfo{
 				Name:        pkg,
@@ -459,7 +463,10 @@ func SearchPackages(keyword string) []AppState {
 				Description: desc,
 				InstallMode: "apt",
 			},
-			Installed: packageInstalled(ctx, pkg),
+			Installed:    iv != "",
+			InstalledVer: iv,
+			CandidateVer: cv,
+			Upgradable:   iv != "" && cv != "" && iv != cv,
 		})
 	}
 
@@ -477,9 +484,13 @@ func collectPackages(ctx context.Context, apps []AppInfo) PackageSection {
 
 	appStates := make([]AppState, 0, len(apps))
 	for _, app := range apps {
+		iv, cv := packageVersions(ctx, app.Package)
 		appStates = append(appStates, AppState{
-			AppInfo:   app,
-			Installed: packageInstalled(ctx, app.Package),
+			AppInfo:      app,
+			Installed:    iv != "",
+			InstalledVer: iv,
+			CandidateVer: cv,
+			Upgradable:   iv != "" && cv != "" && iv != cv,
 		})
 	}
 
@@ -593,6 +604,25 @@ func packageInstalled(ctx context.Context, name string) bool {
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-lc", fmt.Sprintf("dpkg -s %s >/dev/null 2>&1", shellQuote(name)))
 	return cmd.Run() == nil
+}
+
+func packageVersions(ctx context.Context, name string) (installed, candidate string) {
+	output := runShell(ctx, fmt.Sprintf("apt-cache policy %s 2>/dev/null", shellQuote(name)))
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Installed:") {
+			v := strings.TrimSpace(strings.TrimPrefix(line, "Installed:"))
+			if v != "(none)" {
+				installed = v
+			}
+		} else if strings.HasPrefix(line, "Candidate:") {
+			v := strings.TrimSpace(strings.TrimPrefix(line, "Candidate:"))
+			if v != "(none)" {
+				candidate = v
+			}
+		}
+	}
+	return
 }
 
 func readFileLines(path string, limit int, skipComments bool) []string {

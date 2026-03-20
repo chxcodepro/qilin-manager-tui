@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -57,14 +58,28 @@ var (
 				Foreground(lipgloss.Color("#F8FAFC")).
 				Background(lipgloss.Color("#2563EB")).
 				Bold(true)
+
+	greenStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#22C55E")).
+			Bold(true)
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#64748B"))
+
+	yellowStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FBBF24"))
+
+	redStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EF4444"))
 )
 
 func (m model) viewHeader() string {
 	tabs := []string{
-		m.renderTab(sectionOverview, "系统/网络"),
-		m.renderTab(sectionDisk, "磁盘分析"),
-		m.renderTab(sectionPerf, "CPU/内存"),
-		m.renderTab(sectionPackage, "软件维护"),
+		m.renderTab(sectionOverview, "系统"),
+		m.renderTab(sectionDisk, "磁盘"),
+		m.renderTab(sectionPerf, "资源"),
+		m.renderTab(sectionPackage, "软件"),
+		m.renderTab(sectionMaintain, "维护"),
 	}
 
 	right := "版本 " + m.version
@@ -104,6 +119,8 @@ func (m model) viewBody() string {
 		return panelStyle.Width(width).Render(m.viewPerf(bodyWidth))
 	case sectionPackage:
 		return panelStyle.Width(width).Render(m.viewPackages(bodyWidth))
+	case sectionMaintain:
+		return panelStyle.Width(width).Render(m.viewMaintain(bodyWidth))
 	default:
 		return panelStyle.Width(width).Render("未知页面")
 	}
@@ -150,26 +167,12 @@ func (m model) viewPerf(width int) string {
 	return cardStyle.Width(width).Render(
 		highlightStyle.Render("系统资源") + "\n" +
 			strings.Join(pairs, "  ") + "\n" +
-			renderProcessTable(m.snapshot.Perf.Top, width-6),
+			renderProcessTable(m.snapshot.Perf.Top, m.perfCursor, width-6),
 	)
 }
 
 func (m model) viewPackages(width int) string {
 	contentW := width - 6
-
-	statusLine := labelStyle.Render("源状态:") +
-		" apt " + boolText(m.snapshot.Packages.AptReady) +
-		" | sudo " + boolText(m.snapshot.Packages.SudoReady) +
-		" | 备份源 " + boolText(m.snapshot.Packages.BackupExists)
-
-	actions := []string{
-		highlightStyle.Render("[o]") + " 切换官方源  " + labelStyle.Render("cp sources.list{,.bak} && 写入官方源 && apt-get update"),
-		highlightStyle.Render("[b]") + " 恢复备份源  " + labelStyle.Render("cp sources.list.bak sources.list && apt-get update"),
-		highlightStyle.Render("[u]") + " 更新索引    " + labelStyle.Render("apt-get update"),
-		highlightStyle.Render("[c]") + " 清理包缓存  " + labelStyle.Render("apt-get clean"),
-		highlightStyle.Render("[g]") + " 清理日志    " + labelStyle.Render("truncate /var/log/*.log"),
-		highlightStyle.Render("[i]") + " 安装勾选  " + highlightStyle.Render("[d]") + " 卸载勾选",
-	}
 
 	visibleApps := m.visibleApps()
 
@@ -184,7 +187,7 @@ func (m model) viewPackages(width int) string {
 	}
 	nameW += 2
 	pkgW += 1
-	statusColW := 6
+	statusColW := 14
 	lineOverhead := 4 + 1 + 1 + 1
 	descW := contentW - nameW - pkgW - statusColW - lineOverhead
 	if descW < 6 {
@@ -206,24 +209,62 @@ func (m model) viewPackages(width int) string {
 			selected = "x"
 		}
 
-		installed := "未安装"
-		if app.Installed {
-			installed = "已安装"
-		}
-
 		desc := truncateText(app.Description, descW)
-		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, statusColW) + " " + desc
+
 		if idx == m.appCursor {
-			line = selectedRowStyle.Render(line)
+			statusText := "未安装"
+			if app.Upgradable {
+				statusText = "↑" + truncateText(app.InstalledVer, statusColW-2)
+			} else if app.Installed {
+				statusText = "✓" + truncateText(app.InstalledVer, statusColW-2)
+			}
+			line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(statusText, statusColW) + " " + desc
+			appLines = append(appLines, selectedRowStyle.Render(line))
+		} else {
+			var statusCell string
+			if app.Upgradable {
+				statusCell = yellowStyle.Width(statusColW).Render("↑" + truncateText(app.InstalledVer, statusColW-2))
+			} else if app.Installed {
+				statusCell = greenStyle.Width(statusColW).Render("✓" + truncateText(app.InstalledVer, statusColW-2))
+			} else {
+				statusCell = dimStyle.Width(statusColW).Render("未安装")
+			}
+			line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + statusCell + " " + desc
+			appLines = append(appLines, line)
 		}
-		appLines = append(appLines, line)
 	}
 
 	return cardStyle.Width(width).Render(
-		highlightStyle.Render("软件维护") + "\n" +
-			statusLine + "\n" +
-			strings.Join(actions, "\n") + "\n" +
+		highlightStyle.Render("软件管理") + "  " +
+			highlightStyle.Render("[i]") + " 安装  " +
+			highlightStyle.Render("[d]") + " 卸载  " +
+			highlightStyle.Render("[/]") + " 搜索\n" +
 			renderList(appLines, "暂无软件"),
+	)
+}
+
+func (m model) viewMaintain(width int) string {
+	statusLine := labelStyle.Render("源状态:") +
+		" apt " + boolText(m.snapshot.Packages.AptReady) +
+		" | sudo " + boolText(m.snapshot.Packages.SudoReady) +
+		" | 备份源 " + boolText(m.snapshot.Packages.BackupExists)
+
+	actions := m.maintainActions()
+	lines := make([]string, 0, len(actions)+2)
+	lines = append(lines, statusLine, "")
+	for idx, a := range actions {
+		prefix := "  "
+		if idx == m.maintainCursor {
+			line := fmt.Sprintf("▸ %s    %s", a.Title, a.Preview)
+			lines = append(lines, selectedRowStyle.Render(line))
+		} else {
+			lines = append(lines, prefix+highlightStyle.Render(a.Title)+"    "+labelStyle.Render(a.Preview))
+		}
+	}
+
+	return cardStyle.Width(width).Render(
+		highlightStyle.Render("系统维护") + "  " + labelStyle.Render("↑/↓ 选择 | Enter 执行") + "\n" +
+			strings.Join(lines, "\n"),
 	)
 }
 
@@ -231,14 +272,18 @@ func (m model) viewFooter() string {
 	width := max(m.width-4, 60)
 	lines := []string{"状态: " + m.status}
 	if m.showHelp {
-		lines = append(lines, "全局: Tab/Shift+Tab 切页 | r 刷新 | ? 帮助开关 | q 退出")
+		lines = append(lines, "全局: Tab/Shift+Tab 切页 | r 刷新 | ` 控制台 | ? 帮助 | q 退出")
 		switch m.active {
 		case sectionOverview:
-			lines = append(lines, "系统/网络页: ↑/↓ 选行 | Enter 编辑网卡")
+			lines = append(lines, "系统页: ↑/↓ 选行 | Enter 编辑网卡")
 		case sectionDisk:
 			lines = append(lines, "磁盘页: ↑/↓ 选项 | Enter 进入目录 | Backspace 返回")
+		case sectionPerf:
+			lines = append(lines, "资源页: ↑/↓ 选进程 | x 终止进程")
 		case sectionPackage:
-			lines = append(lines, "软件页: ↑/↓ 选中 | 空格勾选 | / 搜索 | d 卸载勾选 | Esc 返回列表")
+			lines = append(lines, "软件页: ↑/↓ 选中 | 空格勾选 | / 搜索 | i 安装 | d 卸载 | Esc 返回列表")
+		case sectionMaintain:
+			lines = append(lines, "维护页: ↑/↓ 选择 | Enter 执行维护命令")
 		}
 	}
 	return panelStyle.Width(width).Render(strings.Join(lines, "\n"))
@@ -281,9 +326,9 @@ func (m model) viewNetworkDialog() string {
 		value := m.netDialog.Values[i]
 		if i == netFieldMode {
 			if value == "DHCP" {
-				value = "[DHCP] / 静态"
+				value = greenStyle.Render("DHCP") + " / " + dimStyle.Render("静态")
 			} else {
-				value = "DHCP / [静态]"
+				value = dimStyle.Render("DHCP") + " / " + greenStyle.Render("静态")
 			}
 		}
 
@@ -323,7 +368,7 @@ func renderInfoCard(title string, items []system.InfoItem, width int) string {
 	return cardStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func renderProcessTable(items []system.ProcessItem, availWidth int) string {
+func renderProcessTable(items []system.ProcessItem, cursor int, availWidth int) string {
 	pidW := 7
 	cpuW := 7
 	memW := 7
@@ -338,8 +383,12 @@ func renderProcessTable(items []system.ProcessItem, availWidth int) string {
 	lines := []string{
 		labelStyle.Render(padRight("PID", pidW) + " " + padRight("进程", nameW) + " " + padRight("CPU%", cpuW) + " " + "MEM%"),
 	}
-	for _, item := range items {
-		lines = append(lines, padRight(item.PID, pidW)+" "+padRight(truncateText(item.Name, nameW), nameW)+" "+padRight(item.CPU, cpuW)+" "+item.Memory)
+	for idx, item := range items {
+		line := padRight(item.PID, pidW) + " " + padRight(truncateText(item.Name, nameW), nameW) + " " + padRight(item.CPU, cpuW) + " " + item.Memory
+		if idx == cursor {
+			line = selectedRowStyle.Render(line)
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -543,4 +592,54 @@ func (m model) networkSaveModeText() string {
 		return "nmcli 持久化保存"
 	}
 	return "只读，缺少 nmcli"
+}
+
+func (m model) viewConsole(width int) string {
+	if len(m.consoleLogs) == 0 {
+		return ""
+	}
+
+	title := highlightStyle.Render("控制台") + "  " + dimStyle.Render("` 展开/收起")
+
+	if m.consoleExpanded && len(m.consoleLogs) > 0 {
+		idx := len(m.consoleLogs) - 1
+		if m.consoleCursor >= 0 && m.consoleCursor < len(m.consoleLogs) {
+			idx = m.consoleCursor
+		}
+		entry := m.consoleLogs[idx]
+		statusText := yellowStyle.Render("执行中...")
+		if entry.Done {
+			if entry.Err != nil {
+				statusText = redStyle.Render("✗ 失败: " + entry.Err.Error())
+			} else {
+				statusText = greenStyle.Render("✓ 完成")
+			}
+		}
+		header := fmt.Sprintf("%s  %s  %s", entry.Time.Format("15:04:05"), entry.Title, statusText)
+		output := entry.Output
+		if output == "" {
+			output = dimStyle.Render("(无输出)")
+		}
+		lines := []string{title, header, labelStyle.Render(entry.Command), output}
+		return panelStyle.Width(width).Render(strings.Join(lines, "\n"))
+	}
+
+	// 收起态：最近 3 条
+	start := len(m.consoleLogs) - 3
+	if start < 0 {
+		start = 0
+	}
+	lines := []string{title}
+	for _, entry := range m.consoleLogs[start:] {
+		statusText := yellowStyle.Render("执行中...")
+		if entry.Done {
+			if entry.Err != nil {
+				statusText = redStyle.Render("✗ 失败")
+			} else {
+				statusText = greenStyle.Render("✓ 完成")
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s  %-20s %s", entry.Time.Format("15:04:05"), entry.Title, statusText))
+	}
+	return panelStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
