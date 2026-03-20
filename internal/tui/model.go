@@ -580,12 +580,16 @@ func (m *model) applyNetworkEditValue(value string) {
 		}
 	case networkColIP:
 		draft.Address = value
+		draft.Mode = "静态"
 	case networkColMask:
 		draft.Mask = value
+		draft.Mode = "静态"
 	case networkColGateway:
 		draft.Gateway = value
+		draft.Mode = "静态"
 	case networkColDNS:
 		draft.DNS = value
+		draft.Mode = "静态"
 	}
 }
 

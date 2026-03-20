@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -94,13 +95,30 @@ func CollectSnapshot(diskTarget string, apps []AppInfo) Snapshot {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 
+	var (
+		wg       sync.WaitGroup
+		sysInfo  SystemSection
+		netInfo  NetworkSection
+		diskInfo DiskSection
+		perfInfo PerfSection
+		pkgInfo  PackageSection
+	)
+
+	wg.Add(5)
+	go func() { defer wg.Done(); sysInfo = collectSystem(ctx) }()
+	go func() { defer wg.Done(); netInfo = collectNetwork(ctx) }()
+	go func() { defer wg.Done(); diskInfo = collectDisk(ctx, diskTarget) }()
+	go func() { defer wg.Done(); perfInfo = collectPerf(ctx) }()
+	go func() { defer wg.Done(); pkgInfo = collectPackages(ctx, apps) }()
+	wg.Wait()
+
 	return Snapshot{
 		GeneratedAt: time.Now(),
-		System:      collectSystem(ctx),
-		Network:     collectNetwork(ctx),
-		Disk:        collectDisk(ctx, diskTarget),
-		Perf:        collectPerf(ctx),
-		Packages:    collectPackages(ctx, apps),
+		System:      sysInfo,
+		Network:     netInfo,
+		Disk:        diskInfo,
+		Perf:        perfInfo,
+		Packages:    pkgInfo,
 	}
 }
 
@@ -189,9 +207,24 @@ func collectNetwork(ctx context.Context) NetworkSection {
 }
 
 func collectNetworkByNMCLI(ctx context.Context) []NetworkInterface {
-	lines := cleanLines(runShell(ctx, "nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status 2>/dev/null"))
-	result := make([]NetworkInterface, 0, len(lines))
-	for _, line := range lines {
+	statusLines := cleanLines(runShell(ctx, "nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status 2>/dev/null"))
+	details := parseAllDeviceDetails(runShell(ctx, "nmcli -t device show 2>/dev/null"))
+
+	connections := make([]string, 0, len(statusLines))
+	for _, line := range statusLines {
+		parts := strings.SplitN(line, ":", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		conn := strings.TrimSpace(parts[3])
+		if conn != "" && conn != "--" {
+			connections = append(connections, conn)
+		}
+	}
+	methods := batchConnectionMethods(ctx, connections)
+
+	result := make([]NetworkInterface, 0, len(statusLines))
+	for _, line := range statusLines {
 		parts := strings.SplitN(line, ":", 4)
 		if len(parts) < 4 {
 			continue
@@ -204,23 +237,85 @@ func collectNetworkByNMCLI(ctx context.Context) []NetworkInterface {
 		if connection == "--" {
 			connection = ""
 		}
+
+		d := details[name]
 		iface := NetworkInterface{
 			Name:       name,
 			Type:       strings.TrimSpace(parts[1]),
 			State:      strings.TrimSpace(parts[2]),
 			Connection: connection,
+			IPv4:       d.ipv4,
+			Prefix:     d.prefix,
+			Mask:       d.mask,
+			Gateway:    d.gateway,
+			DNS:        d.dns,
 		}
-
-		addressText := strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.ADDRESS device show %s 2>/dev/null | head -n 1", shellQuote(name))))
-		iface.IPv4, iface.Prefix, iface.Mask = parseCIDR(addressText)
-		iface.Gateway = strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.GATEWAY device show %s 2>/dev/null | head -n 1", shellQuote(name))))
-		iface.DNS = cleanLines(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.DNS device show %s 2>/dev/null", shellQuote(name))))
-
 		if connection != "" {
-			iface.Method = strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g ipv4.method connection show %s 2>/dev/null | head -n 1", shellQuote(connection))))
+			iface.Method = methods[connection]
 		}
-
 		result = append(result, iface)
+	}
+	return result
+}
+
+type deviceDetail struct {
+	ipv4    string
+	prefix  string
+	mask    string
+	gateway string
+	dns     []string
+}
+
+func parseAllDeviceDetails(text string) map[string]deviceDetail {
+	result := make(map[string]deviceDetail)
+	var current string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if key == "GENERAL.DEVICE" {
+			current = val
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		d := result[current]
+		switch {
+		case strings.HasPrefix(key, "IP4.ADDRESS") && d.ipv4 == "":
+			d.ipv4, d.prefix, d.mask = parseCIDR(val)
+		case key == "IP4.GATEWAY" && d.gateway == "" && val != "--":
+			d.gateway = val
+		case strings.HasPrefix(key, "IP4.DNS") && val != "" && val != "--":
+			d.dns = append(d.dns, val)
+		}
+		result[current] = d
+	}
+	return result
+}
+
+func batchConnectionMethods(ctx context.Context, connections []string) map[string]string {
+	if len(connections) == 0 {
+		return nil
+	}
+	var script strings.Builder
+	for _, conn := range connections {
+		q := shellQuote(conn)
+		script.WriteString(fmt.Sprintf("printf '%%s\\t' %s; nmcli -t -g ipv4.method connection show %s 2>/dev/null || true; ", q, q))
+	}
+	result := make(map[string]string, len(connections))
+	for _, line := range cleanLines(runShell(ctx, script.String())) {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 {
+			result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
 	}
 	return result
 }

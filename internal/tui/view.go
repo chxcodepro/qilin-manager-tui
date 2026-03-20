@@ -20,7 +20,7 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color("#CBD5E1"))
 
-	activeTabStyle = tabStyle.Copy().
+	activeTabStyle = tabStyle.
 			Bold(true).
 			Foreground(lipgloss.Color("#0F172A")).
 			Background(lipgloss.Color("#F59E0B"))
@@ -296,7 +296,6 @@ func renderNetworkTable(m model) string {
 			draft.DNS,
 			draft.Connection,
 		}
-		lines = append(lines, renderTableRow(values, widths, rowIdx, m.networkCursor, false))
 
 		cells := make([]string, 0, len(values))
 		for colIdx, value := range values {
@@ -315,7 +314,7 @@ func renderNetworkTable(m model) string {
 			}
 			cells = append(cells, lipgloss.NewStyle().Width(widths[colIdx]).Render(truncateText(firstText(cellValue, "-"), widths[colIdx])))
 		}
-		lines[len(lines)-1] = strings.Join(cells, " ")
+		lines = append(lines, strings.Join(cells, " "))
 	}
 
 	return strings.Join(lines, "\n")
@@ -382,18 +381,4 @@ func (m model) networkSaveModeText() string {
 		return "nmcli 持久化保存"
 	}
 	return "只读，缺少 nmcli"
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

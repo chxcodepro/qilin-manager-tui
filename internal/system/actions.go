@@ -138,6 +138,10 @@ func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
 		return Action{}, fmt.Errorf("静态模式下 IP 和子网掩码不能为空")
 	}
 
+	if net.ParseIP(address) == nil {
+		return Action{}, fmt.Errorf("IP 地址格式不对: %s", address)
+	}
+
 	prefix, err := maskToPrefix(mask)
 	if err != nil {
 		return Action{}, err
@@ -148,6 +152,9 @@ func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
 	)
 
 	if strings.TrimSpace(cfg.Gateway) != "" {
+		if net.ParseIP(strings.TrimSpace(cfg.Gateway)) == nil {
+			return Action{}, fmt.Errorf("网关地址格式不对: %s", cfg.Gateway)
+		}
 		lines = append(lines, "nmcli con mod "+connection+" ipv4.gateway "+shellQuote(strings.TrimSpace(cfg.Gateway)))
 	} else {
 		lines = append(lines, "nmcli con mod "+connection+" ipv4.gateway \"\"")
@@ -155,6 +162,11 @@ func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
 
 	dns := strings.Join(splitDNS(cfg.DNS), " ")
 	if dns != "" {
+		for _, d := range splitDNS(cfg.DNS) {
+			if net.ParseIP(d) == nil {
+				return Action{}, fmt.Errorf("DNS 地址格式不对: %s", d)
+			}
+		}
 		lines = append(lines, "nmcli con mod "+connection+" ipv4.dns "+shellQuote(dns))
 	} else {
 		lines = append(lines, "nmcli con mod "+connection+" ipv4.dns \"\"")
