@@ -162,13 +162,14 @@ func (m model) viewPackages(width int) string {
 		" | sudo " + boolText(m.snapshot.Packages.SudoReady) +
 		" | 备份源 " + boolText(m.snapshot.Packages.BackupExists)
 
-	actionLine := highlightStyle.Render("[o]") + "切源 " +
-		highlightStyle.Render("[b]") + "恢复 " +
-		highlightStyle.Render("[u]") + "更新 " +
-		highlightStyle.Render("[c]") + "清缓存 " +
-		highlightStyle.Render("[g]") + "清日志 " +
-		highlightStyle.Render("[i]") + "安装 " +
-		highlightStyle.Render("[d]") + "卸载"
+	actions := []string{
+		highlightStyle.Render("[o]") + " 切换官方源  " + labelStyle.Render("cp sources.list{,.bak} && 写入官方源 && apt-get update"),
+		highlightStyle.Render("[b]") + " 恢复备份源  " + labelStyle.Render("cp sources.list.bak sources.list && apt-get update"),
+		highlightStyle.Render("[u]") + " 更新索引    " + labelStyle.Render("apt-get update"),
+		highlightStyle.Render("[c]") + " 清理包缓存  " + labelStyle.Render("apt-get clean"),
+		highlightStyle.Render("[g]") + " 清理日志    " + labelStyle.Render("truncate /var/log/*.log"),
+		highlightStyle.Render("[i]") + " 安装勾选  " + highlightStyle.Render("[d]") + " 卸载勾选",
+	}
 
 	visibleApps := m.visibleApps()
 
@@ -221,7 +222,7 @@ func (m model) viewPackages(width int) string {
 	return cardStyle.Width(width).Render(
 		highlightStyle.Render("软件维护") + "\n" +
 			statusLine + "\n" +
-			actionLine + "\n" +
+			strings.Join(actions, "\n") + "\n" +
 			renderList(appLines, "暂无软件"),
 	)
 }
@@ -233,7 +234,7 @@ func (m model) viewFooter() string {
 		lines = append(lines, "全局: Tab/Shift+Tab 切页 | r 刷新 | ? 帮助开关 | q 退出")
 		switch m.active {
 		case sectionOverview:
-			lines = append(lines, "系统/网络页: ↑/↓ 选行 | ←/→ 选列 | Enter 编辑 | Ctrl+S 保存当前行 | Esc 取消编辑")
+			lines = append(lines, "系统/网络页: ↑/↓ 选行 | Enter 编辑网卡")
 		case sectionDisk:
 			lines = append(lines, "磁盘页: ↑/↓ 选项 | Enter 进入目录 | Backspace 返回")
 		case sectionPackage:
@@ -261,6 +262,51 @@ func (m model) viewConfirmDialog() string {
 		Render(content)
 }
 
+func (m model) viewNetworkDialog() string {
+	draft := m.currentNetworkDraft()
+	if draft == nil {
+		return ""
+	}
+
+	labels := []string{"模式", "IP 地址", "子网掩码", "网关", "DNS"}
+
+	lines := make([]string, 0, len(labels)+5)
+	lines = append(lines, highlightStyle.Render("编辑网卡: "+draft.Device))
+	if draft.Connection != "" {
+		lines = append(lines, labelStyle.Render("连接: "+draft.Connection))
+	}
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		value := m.netDialog.Values[i]
+		if i == netFieldMode {
+			if value == "DHCP" {
+				value = "[DHCP] / 静态"
+			} else {
+				value = "DHCP / [静态]"
+			}
+		}
+
+		labelText := padRight(label, 8)
+		if i == m.netDialog.Field {
+			if i != netFieldMode {
+				value = value + "_"
+			}
+			lines = append(lines, selectedCellStyle.Render(labelText+"  "+value))
+		} else {
+			lines = append(lines, labelStyle.Render(labelText)+"  "+valueStyle.Render(value))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, labelStyle.Render("↑/↓ 切换 | 空格切换模式 | Ctrl+S 保存 | Esc 取消"))
+
+	return cardStyle.
+		Width(min(max(m.width/2, 45), 70)).
+		BorderForeground(lipgloss.Color("#F59E0B")).
+		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
 func renderInfoCard(title string, items []system.InfoItem, width int) string {
 	lines := make([]string, 0, len(items)+1)
 	lines = append(lines, highlightStyle.Render(title))
@@ -284,6 +330,9 @@ func renderProcessTable(items []system.ProcessItem, availWidth int) string {
 	nameW := availWidth - pidW - cpuW - memW - 3
 	if nameW < 12 {
 		nameW = 12
+	}
+	if nameW > 30 {
+		nameW = 30
 	}
 
 	lines := []string{
@@ -377,25 +426,8 @@ func renderNetworkTable(m model, availWidth int) string {
 			draft.DNS,
 			draft.Connection,
 		}
-
-		cells := make([]string, 0, len(values))
-		for colIdx, value := range values {
-			cellValue := value
-			if rowIdx == m.networkCursor && colIdx == m.networkCol {
-				if m.networkEdit.Active {
-					cellValue = m.networkEdit.Value + "_"
-				}
-				cellValue = truncateText(firstText(cellValue, "-"), widths[colIdx])
-				if m.networkEdit.Active {
-					cells = append(cells, editingCellStyle.Width(widths[colIdx]).Render(cellValue))
-				} else {
-					cells = append(cells, selectedCellStyle.Width(widths[colIdx]).Render(cellValue))
-				}
-				continue
-			}
-			cells = append(cells, lipgloss.NewStyle().Width(widths[colIdx]).Render(truncateText(firstText(cellValue, "-"), widths[colIdx])))
-		}
-		lines = append(lines, strings.Join(cells, " "))
+		line := renderTableRow(values, widths, rowIdx, m.networkCursor, false)
+		lines = append(lines, line)
 	}
 
 	return strings.Join(lines, "\n")

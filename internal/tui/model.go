@@ -23,14 +23,12 @@ const (
 )
 
 const (
-	networkColName = iota
-	networkColState
-	networkColMode
-	networkColIP
-	networkColMask
-	networkColGateway
-	networkColDNS
-	networkColConnection
+	netFieldMode = iota
+	netFieldIP
+	netFieldMask
+	netFieldGateway
+	netFieldDNS
+	netFieldCount
 )
 
 type snapshotMsg struct {
@@ -63,9 +61,10 @@ type networkDraft struct {
 	DNS        string
 }
 
-type networkEdit struct {
+type networkDialog struct {
 	Active bool
-	Value  string
+	Field  int
+	Values [netFieldCount]string
 }
 
 type model struct {
@@ -79,9 +78,8 @@ type model struct {
 	diskPath      string
 	diskCursor    int
 	networkCursor int
-	networkCol    int
 	networkDrafts []networkDraft
-	networkEdit   networkEdit
+	netDialog     networkDialog
 	apps          []system.AppInfo
 	appCursor     int
 	selectedApps  map[string]bool
@@ -138,7 +136,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.confirming != nil || m.networkEdit.Active || m.searchMode {
+		if m.confirming != nil || m.netDialog.Active || m.searchMode {
 			return m, tickCmd()
 		}
 		m.loading = true
@@ -179,8 +177,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.networkEdit.Active {
-			return m.updateNetworkEdit(msg)
+		if m.netDialog.Active {
+			return m.updateNetworkDialog(msg)
 		}
 
 		switch msg.String() {
@@ -193,15 +191,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prevSection()
 			return m, nil
 		case "left", "h":
-			if m.active == sectionOverview {
-				return m.updateOverview(msg)
-			}
 			m.prevSection()
 			return m, nil
 		case "right", "l":
-			if m.active == sectionOverview {
-				return m.updateOverview(msg)
-			}
 			m.nextSection()
 			return m, nil
 		case "r":
@@ -261,66 +253,58 @@ func (m model) updateOverview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.networkCursor++
 		}
 		return m, nil
-	case "left", "h":
-		if m.networkCol > 0 {
-			m.networkCol--
-		}
-		return m, nil
-	case "right", "l":
-		if m.networkCol < networkColConnection {
-			m.networkCol++
-		}
-		return m, nil
 	case "enter", "e":
-		if !m.canEditCurrentCell() {
-			m.status = "当前单元格不可编辑"
+		draft := m.currentNetworkDraft()
+		if draft == nil {
+			m.status = "没有可编辑的网卡"
 			return m, nil
 		}
-		m.networkEdit.Active = true
-		m.networkEdit.Value = m.currentNetworkCellValue()
-		m.status = "开始编辑当前单元格"
-		return m, nil
-	case "ctrl+s":
-		action, err := m.currentNetworkAction()
-		if err != nil {
-			m.status = err.Error()
+		if !m.snapshot.Network.NMCLIAvailable {
+			m.status = "缺少 nmcli，无法编辑"
 			return m, nil
 		}
-		m.confirming = &pendingAction{action: action}
+		if strings.TrimSpace(draft.Connection) == "" {
+			m.status = "当前网卡没有连接，无法编辑"
+			return m, nil
+		}
+		m.netDialog = networkDialog{
+			Active: true,
+			Field:  netFieldMode,
+			Values: [netFieldCount]string{
+				draft.Mode,
+				draft.Address,
+				draft.Mask,
+				draft.Gateway,
+				draft.DNS,
+			},
+		}
+		m.status = "编辑网卡配置"
 		return m, nil
 	}
 	return m, nil
 }
 
-func (m model) updateNetworkEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateNetworkDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc":
-		m.networkEdit = networkEdit{}
-		m.status = "已取消单元格编辑"
+		m.netDialog = networkDialog{}
+		m.status = "已取消编辑"
 		return m, nil
-	case "enter":
-		m.applyNetworkEditValue(strings.TrimSpace(m.networkEdit.Value))
-		m.networkEdit = networkEdit{}
-		m.status = "已应用当前单元格"
-		return m, nil
-	case "backspace":
-		if m.networkCol == networkColMode {
-			m.toggleModeValue()
-			return m, nil
-		}
-		runes := []rune(m.networkEdit.Value)
-		if len(runes) > 0 {
-			m.networkEdit.Value = string(runes[:len(runes)-1])
+	case "tab", "down", "j":
+		if m.netDialog.Field < netFieldCount-1 {
+			m.netDialog.Field++
 		}
 		return m, nil
-	case "left", "right", " ":
-		if m.networkCol == networkColMode {
-			m.toggleModeValue()
+	case "shift+tab", "up", "k":
+		if m.netDialog.Field > 0 {
+			m.netDialog.Field--
 		}
 		return m, nil
 	case "ctrl+s":
-		m.applyNetworkEditValue(strings.TrimSpace(m.networkEdit.Value))
-		m.networkEdit = networkEdit{}
+		m.applyDialogToDraft()
+		m.netDialog = networkDialog{}
 		action, err := m.currentNetworkAction()
 		if err != nil {
 			m.status = err.Error()
@@ -328,12 +312,27 @@ func (m model) updateNetworkEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.confirming = &pendingAction{action: action}
 		return m, nil
+	case "backspace":
+		if m.netDialog.Field == netFieldMode {
+			m.toggleDialogMode()
+			return m, nil
+		}
+		runes := []rune(m.netDialog.Values[m.netDialog.Field])
+		if len(runes) > 0 {
+			m.netDialog.Values[m.netDialog.Field] = string(runes[:len(runes)-1])
+		}
+		return m, nil
+	case "left", "right", " ":
+		if m.netDialog.Field == netFieldMode {
+			m.toggleDialogMode()
+		}
+		return m, nil
 	}
 
-	if m.networkCol != networkColMode {
+	if m.netDialog.Field != netFieldMode {
 		value := msg.String()
 		if utf8.RuneCountInString(value) == 1 && value != "\x00" {
-			m.networkEdit.Value += value
+			m.netDialog.Values[m.netDialog.Field] += value
 		}
 	}
 	return m, nil
@@ -496,6 +495,10 @@ func (m model) View() string {
 	footer := m.viewFooter()
 	content := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 
+	if m.netDialog.Active {
+		return overlay(content, m.viewNetworkDialog())
+	}
+
 	if m.confirming != nil {
 		return overlay(content, m.viewConfirmDialog())
 	}
@@ -614,9 +617,6 @@ func (m *model) syncNetworkDrafts() {
 	if m.networkCursor < 0 {
 		m.networkCursor = 0
 	}
-	if m.networkCol > networkColConnection {
-		m.networkCol = networkColConnection
-	}
 }
 
 func (m model) currentNetworkDraft() *networkDraft {
@@ -626,82 +626,23 @@ func (m model) currentNetworkDraft() *networkDraft {
 	return &m.networkDrafts[m.networkCursor]
 }
 
-func (m model) canEditCurrentCell() bool {
-	draft := m.currentNetworkDraft()
-	if draft == nil {
-		return false
-	}
-	if !m.snapshot.Network.NMCLIAvailable {
-		return false
-	}
-	if strings.TrimSpace(draft.Connection) == "" {
-		return false
-	}
-	return m.networkCol >= networkColMode && m.networkCol <= networkColDNS
-}
-
-func (m model) currentNetworkCellValue() string {
-	draft := m.currentNetworkDraft()
-	if draft == nil {
-		return ""
-	}
-	switch m.networkCol {
-	case networkColName:
-		return draft.Device
-	case networkColState:
-		return draft.State
-	case networkColMode:
-		return draft.Mode
-	case networkColIP:
-		return draft.Address
-	case networkColMask:
-		return draft.Mask
-	case networkColGateway:
-		return draft.Gateway
-	case networkColDNS:
-		return draft.DNS
-	case networkColConnection:
-		return draft.Connection
-	default:
-		return ""
-	}
-}
-
-func (m *model) applyNetworkEditValue(value string) {
+func (m *model) applyDialogToDraft() {
 	draft := m.currentNetworkDraft()
 	if draft == nil {
 		return
 	}
-	switch m.networkCol {
-	case networkColMode:
-		if value == "DHCP" {
-			draft.Mode = "DHCP"
-		} else {
-			draft.Mode = "静态"
-		}
-	case networkColIP:
-		draft.Address = value
-		draft.Mode = "静态"
-	case networkColMask:
-		draft.Mask = value
-		draft.Mode = "静态"
-	case networkColGateway:
-		draft.Gateway = value
-		draft.Mode = "静态"
-	case networkColDNS:
-		draft.DNS = value
-		draft.Mode = "静态"
-	}
+	draft.Mode = m.netDialog.Values[netFieldMode]
+	draft.Address = strings.TrimSpace(m.netDialog.Values[netFieldIP])
+	draft.Mask = strings.TrimSpace(m.netDialog.Values[netFieldMask])
+	draft.Gateway = strings.TrimSpace(m.netDialog.Values[netFieldGateway])
+	draft.DNS = strings.TrimSpace(m.netDialog.Values[netFieldDNS])
 }
 
-func (m *model) toggleModeValue() {
-	if m.networkCol != networkColMode {
-		return
-	}
-	if m.networkEdit.Value == "DHCP" {
-		m.networkEdit.Value = "静态"
+func (m *model) toggleDialogMode() {
+	if m.netDialog.Values[netFieldMode] == "DHCP" {
+		m.netDialog.Values[netFieldMode] = "静态"
 	} else {
-		m.networkEdit.Value = "DHCP"
+		m.netDialog.Values[netFieldMode] = "DHCP"
 	}
 }
 
