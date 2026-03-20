@@ -33,7 +33,8 @@ const (
 )
 
 type snapshotMsg struct {
-	snapshot system.Snapshot
+	snapshot         system.Snapshot
+	includeDiskUsage bool
 }
 
 type actionDoneMsg struct {
@@ -97,16 +98,18 @@ type model struct {
 	selectedApps  map[string]bool
 	searchMode    bool
 	searchInput   string
+	searchKeyword string
 	searchResults []system.AppState
 	showSearch    bool
 	snapshot      system.Snapshot
 	status        string
-	confirming       *pendingAction
-	consoleLogs      []consoleEntry
-	consoleExpanded  bool
-	consoleCursor    int // -1 表示跟踪最新
-	maintainCursor   int
-	perfCursor       int
+	confirming    *pendingAction
+	runningAction bool
+	consoleLogs   []consoleEntry
+	consoleExpanded bool
+	consoleCursor int // -1 表示跟踪最新
+	maintainCursor int
+	perfCursor   int
 }
 
 func Run(version string) error {
@@ -130,7 +133,7 @@ func newModel(version string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), tickCmd())
+	return tea.Batch(m.refreshDataCmd(false), tickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -142,6 +145,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case snapshotMsg:
+		if !msg.includeDiskUsage &&
+			msg.snapshot.Disk.Target == m.snapshot.Disk.Target &&
+			len(m.snapshot.Disk.Entries) > 0 {
+			msg.snapshot.Disk.Entries = m.snapshot.Disk.Entries
+		}
 		m.snapshot = msg.snapshot
 		m.loading = false
 		m.syncNetworkDrafts()
@@ -154,14 +162,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.confirming != nil || m.netDialog.Active || m.searchMode {
+		if m.confirming != nil || m.netDialog.Active || m.searchMode || m.runningAction || m.loading {
 			return m, tickCmd()
 		}
 		m.loading = true
-		return m, tea.Batch(m.refreshCmd(), tickCmd())
+		return m, tea.Batch(m.refreshDataCmd(false), tickCmd())
 
 	case actionDoneMsg:
 		m.confirming = nil
+		m.runningAction = false
 		// 更新控制台日志中最后一条匹配的 entry
 		for i := len(m.consoleLogs) - 1; i >= 0; i-- {
 			if !m.consoleLogs[i].Done && m.consoleLogs[i].Title == msg.title {
@@ -177,7 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.title + "完成"
 		}
 		m.loading = true
-		return m, m.refreshCmd()
+		return m, m.refreshDataCmd(false)
 
 	case searchResultsMsg:
 		m.searchResults = msg.results
@@ -195,6 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.status = "正在执行: " + m.confirming.action.Title
+				m.runningAction = true
 				m.consoleLogs = append(m.consoleLogs, consoleEntry{
 					Time:    time.Now(),
 					Title:   m.confirming.action.Title,
@@ -221,20 +231,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "tab":
 			m.nextSection()
-			return m, nil
+			return m, m.sectionChangedCmd()
 		case "shift+tab":
 			m.prevSection()
-			return m, nil
+			return m, m.sectionChangedCmd()
 		case "left", "h":
 			m.prevSection()
-			return m, nil
+			return m, m.sectionChangedCmd()
 		case "right", "l":
 			m.nextSection()
-			return m, nil
+			return m, m.sectionChangedCmd()
 		case "r":
 			m.loading = true
 			m.status = "正在手动刷新"
-			return m, m.refreshCmd()
+			return m, m.refreshDataCmd(m.active == sectionDisk)
 		case "?":
 			m.showHelp = !m.showHelp
 			if m.showHelp {
@@ -380,6 +390,10 @@ func (m model) updateNetworkDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
+		if err := m.ensureActionAllowed(action); err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
 		m.confirming = &pendingAction{action: action}
 		return m, nil
 	case "backspace":
@@ -434,7 +448,7 @@ func (m model) updateDisk(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.diskCursor = 0
 		m.loading = true
 		m.status = "已进入目录"
-		return m, m.refreshCmd()
+		return m, m.refreshDataCmd(true)
 	case "backspace":
 		if strings.TrimSpace(m.snapshot.Disk.Parent) == "" {
 			m.status = "已经在最上层目录"
@@ -444,7 +458,7 @@ func (m model) updateDisk(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.diskCursor = 0
 		m.loading = true
 		m.status = "已返回上一级目录"
-		return m, m.refreshCmd()
+		return m, m.refreshDataCmd(true)
 	}
 	return m, nil
 }
@@ -483,6 +497,7 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.showSearch {
 			m.showSearch = false
+			m.searchKeyword = ""
 			m.searchResults = nil
 			m.appCursor = 0
 			m.status = "已返回默认列表"
@@ -495,7 +510,12 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "请先勾选要安装的软件"
 			return m, nil
 		}
-		m.confirming = &pendingAction{action: system.InstallAppsAction(packages)}
+		action := system.InstallAppsAction(packages)
+		if err := m.ensureActionAllowed(action); err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
+		m.confirming = &pendingAction{action: action}
 		return m, nil
 	case "d":
 		packages := m.selectedInstalledPackageNames()
@@ -503,7 +523,12 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "请先勾选已安装的软件再卸载"
 			return m, nil
 		}
-		m.confirming = &pendingAction{action: system.UninstallAppsAction(packages)}
+		action := system.UninstallAppsAction(packages)
+		if err := m.ensureActionAllowed(action); err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
+		m.confirming = &pendingAction{action: action}
 		return m, nil
 	}
 	return m, nil
@@ -523,6 +548,7 @@ func (m model) updateSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "搜索关键词为空"
 			return m, nil
 		}
+		m.searchKeyword = keyword
 		m.status = "正在搜索: " + keyword
 		return m, searchCmd(keyword)
 	case "backspace":
@@ -567,12 +593,32 @@ func (m model) View() string {
 	return content
 }
 
-func (m model) refreshCmd() tea.Cmd {
+func (m model) refreshCmd(includeDiskUsage bool) tea.Cmd {
 	target := m.diskPath
 	apps := append([]system.AppInfo(nil), m.apps...)
 	return func() tea.Msg {
-		return snapshotMsg{snapshot: system.CollectSnapshot(target, apps)}
+		return snapshotMsg{
+			snapshot:         system.CollectSnapshot(target, apps, includeDiskUsage),
+			includeDiskUsage: includeDiskUsage,
+		}
 	}
+}
+
+func (m model) refreshDataCmd(includeDiskUsage bool) tea.Cmd {
+	cmds := []tea.Cmd{m.refreshCmd(includeDiskUsage)}
+	if m.showSearch && strings.TrimSpace(m.searchKeyword) != "" {
+		cmds = append(cmds, searchCmd(m.searchKeyword))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *model) sectionChangedCmd() tea.Cmd {
+	if m.active != sectionDisk {
+		return nil
+	}
+	m.loading = true
+	m.status = "正在加载磁盘数据"
+	return m.refreshDataCmd(true)
 }
 
 func (m model) selectedPackageNames() []string {
@@ -606,6 +652,13 @@ func searchCmd(keyword string) tea.Cmd {
 	return func() tea.Msg {
 		return searchResultsMsg{results: system.SearchPackages(keyword)}
 	}
+}
+
+func (m model) ensureActionAllowed(action system.Action) error {
+	if action.RequiresRoot && !m.snapshot.Packages.SudoReady {
+		return fmt.Errorf("当前用户没有 sudo 或 root 权限，不能执行该操作")
+	}
+	return nil
 }
 
 func tickCmd() tea.Cmd {
@@ -760,7 +813,12 @@ func (m model) updateMaintain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.maintainCursor >= 0 && m.maintainCursor < len(actions) {
-			m.confirming = &pendingAction{action: actions[m.maintainCursor].Action()}
+			action := actions[m.maintainCursor].Action()
+			if err := m.ensureActionAllowed(action); err != nil {
+				m.status = err.Error()
+				return m, nil
+			}
+			m.confirming = &pendingAction{action: action}
 		}
 		return m, nil
 	}
@@ -782,7 +840,12 @@ func (m model) updatePerf(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		if len(m.snapshot.Perf.Top) > 0 && m.perfCursor >= 0 && m.perfCursor < len(m.snapshot.Perf.Top) {
 			proc := m.snapshot.Perf.Top[m.perfCursor]
-			m.confirming = &pendingAction{action: system.KillProcessAction(proc.PID)}
+			action := system.KillProcessAction(proc.PID)
+			if err := m.ensureActionAllowed(action); err != nil {
+				m.status = err.Error()
+				return m, nil
+			}
+			m.confirming = &pendingAction{action: action}
 		}
 		return m, nil
 	}

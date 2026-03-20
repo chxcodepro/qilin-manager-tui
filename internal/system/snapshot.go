@@ -95,7 +95,7 @@ type Snapshot struct {
 	Packages    PackageSection
 }
 
-func CollectSnapshot(diskTarget string, apps []AppInfo) Snapshot {
+func CollectSnapshot(diskTarget string, apps []AppInfo, includeDiskUsage bool) Snapshot {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 
@@ -111,7 +111,7 @@ func CollectSnapshot(diskTarget string, apps []AppInfo) Snapshot {
 	wg.Add(5)
 	go func() { defer wg.Done(); sysInfo = collectSystem(ctx) }()
 	go func() { defer wg.Done(); netInfo = collectNetwork(ctx) }()
-	go func() { defer wg.Done(); diskInfo = collectDisk(ctx, diskTarget) }()
+	go func() { defer wg.Done(); diskInfo = collectDisk(ctx, diskTarget, includeDiskUsage) }()
 	go func() { defer wg.Done(); perfInfo = collectPerf(ctx) }()
 	go func() { defer wg.Done(); pkgInfo = collectPackages(ctx, apps) }()
 	wg.Wait()
@@ -357,7 +357,7 @@ func collectNetworkByIP(ctx context.Context) []NetworkInterface {
 	return result
 }
 
-func collectDisk(ctx context.Context, target string) DiskSection {
+func collectDisk(ctx context.Context, target string, includeEntries bool) DiskSection {
 	target = normalizeLinuxPath(target)
 	if target == "" {
 		target = "/"
@@ -368,14 +368,17 @@ func collectDisk(ctx context.Context, target string) DiskSection {
 		filesystems = []string{"未获取到磁盘挂载信息"}
 	}
 
-	lines := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
-	entries := make([]DiskEntry, 0, len(lines))
-	for _, line := range lines {
-		entry, ok := parseDiskEntry(line, target)
-		if !ok {
-			continue
+	entries := make([]DiskEntry, 0)
+	if includeEntries {
+		lines := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
+		entries = make([]DiskEntry, 0, len(lines))
+		for _, line := range lines {
+			entry, ok := parseDiskEntry(line, target)
+			if !ok {
+				continue
+			}
+			entries = append(entries, entry)
 		}
-		entries = append(entries, entry)
 	}
 
 	parent := filepath.Dir(target)

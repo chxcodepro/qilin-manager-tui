@@ -12,6 +12,7 @@ type Action struct {
 	Confirm string
 	Command string
 	Preview string
+	RequiresRoot bool
 }
 
 type NetworkConfig struct {
@@ -73,10 +74,11 @@ apt-get update`, strings.Join(lines, "\n"))
 
 	title := fmt.Sprintf("切换到%s官方源", ver.name)
 	return Action{
-		Title:   title,
-		Confirm: "会备份当前 sources.list，并切换到内置官方源模板，继续吗？",
-		Command: buildRootCommand(script),
-		Preview: "cp sources.list{,.bak} && 写入官方源 && apt-get update",
+		Title:        title,
+		Confirm:      "会备份当前 sources.list，并切换到内置官方源模板，继续吗？",
+		Command:      buildRootCommand(script),
+		Preview:      "cp sources.list{,.bak} && 写入官方源 && apt-get update",
+		RequiresRoot: true,
 	}
 }
 
@@ -87,28 +89,31 @@ cp /etc/apt/sources.list.bak /etc/apt/sources.list
 apt-get update`
 
 	return Action{
-		Title:   "恢复备份源",
-		Confirm: "会用 /etc/apt/sources.list.bak 覆盖当前源并执行更新，继续吗？",
-		Command: buildRootCommand(script),
-		Preview: "cp sources.list.bak sources.list && apt-get update",
+		Title:        "恢复备份源",
+		Confirm:      "会用 /etc/apt/sources.list.bak 覆盖当前源并执行更新，继续吗？",
+		Command:      buildRootCommand(script),
+		Preview:      "cp sources.list.bak sources.list && apt-get update",
+		RequiresRoot: true,
 	}
 }
 
 func AptUpdateAction() Action {
 	return Action{
-		Title:   "更新软件索引",
-		Confirm: "会执行 apt-get update，继续吗？",
-		Command: buildRootCommand("apt-get update"),
-		Preview: "apt-get update",
+		Title:        "更新软件索引",
+		Confirm:      "会执行 apt-get update，继续吗？",
+		Command:      buildRootCommand("apt-get update"),
+		Preview:      "apt-get update",
+		RequiresRoot: true,
 	}
 }
 
 func CleanAptCacheAction() Action {
 	return Action{
-		Title:   "清理包缓存",
-		Confirm: "会执行 apt-get clean，继续吗？",
-		Command: buildRootCommand("apt-get clean"),
-		Preview: "apt-get clean",
+		Title:        "清理包缓存",
+		Confirm:      "会执行 apt-get clean，继续吗？",
+		Command:      buildRootCommand("apt-get clean"),
+		Preview:      "apt-get clean",
+		RequiresRoot: true,
 	}
 }
 
@@ -119,10 +124,11 @@ find /var/log -type f -name '*.log' -exec truncate -s 0 {} +
 find %s -type f -name '*.log' -exec truncate -s 0 {} + 2>/dev/null || true`, home)
 
 	return Action{
-		Title:   "清理日志文件",
-		Confirm: "会把 /var/log 和当前用户目录下的 .log 文件清空内容，继续吗？",
-		Command: buildRootCommand(script),
-		Preview: "find /var/log -name '*.log' -exec truncate -s 0 {} +",
+		Title:        "清理日志文件",
+		Confirm:      "会把 /var/log 和当前用户目录下的 .log 文件清空内容，继续吗？",
+		Command:      buildRootCommand(script),
+		Preview:      "find /var/log -name '*.log' -exec truncate -s 0 {} +",
+		RequiresRoot: true,
 	}
 }
 
@@ -137,28 +143,31 @@ func InstallAppsAction(packages []string) Action {
 	}
 
 	return Action{
-		Title:   "安装选中的软件",
-		Confirm: "会通过 apt-get install 安装当前勾选的软件，继续吗？",
-		Command: buildRootCommand("apt-get install -y " + strings.Join(quoted, " ")),
-		Preview: "apt-get install -y " + strings.Join(quoted, " "),
+		Title:        "安装选中的软件",
+		Confirm:      "会通过 apt-get install 安装当前勾选的软件，继续吗？",
+		Command:      buildRootCommand("apt-get install -y " + strings.Join(quoted, " ")),
+		Preview:      "apt-get install -y " + strings.Join(quoted, " "),
+		RequiresRoot: true,
 	}
 }
 
 func KillProcessAction(pid string) Action {
 	return Action{
-		Title:   fmt.Sprintf("终止进程 %s", pid),
-		Confirm: fmt.Sprintf("会执行 kill -15 %s 终止该进程，继续吗？", pid),
-		Command: buildRootCommand("kill -15 " + shellQuote(pid)),
-		Preview: "kill -15 " + pid,
+		Title:        fmt.Sprintf("终止进程 %s", pid),
+		Confirm:      fmt.Sprintf("会执行 kill -15 %s 终止该进程，继续吗？", pid),
+		Command:      buildRootCommand("kill -15 " + shellQuote(pid)),
+		Preview:      "kill -15 " + pid,
+		RequiresRoot: true,
 	}
 }
 
 func UpgradeAllAction() Action {
 	return Action{
-		Title:   "升级所有可升级软件",
-		Confirm: "会执行 apt-get upgrade -y，继续吗？",
-		Command: buildRootCommand("apt-get upgrade -y"),
-		Preview: "apt-get upgrade -y",
+		Title:        "升级所有可升级软件",
+		Confirm:      "会执行 apt-get upgrade -y，继续吗？",
+		Command:      buildRootCommand("apt-get upgrade -y"),
+		Preview:      "apt-get upgrade -y",
+		RequiresRoot: true,
 	}
 }
 
@@ -173,10 +182,11 @@ func UninstallAppsAction(packages []string) Action {
 	}
 
 	return Action{
-		Title:   "卸载选中的软件",
-		Confirm: "会通过 apt-get remove 卸载当前勾选的已安装软件，继续吗？",
-		Command: buildRootCommand("apt-get remove -y " + strings.Join(quoted, " ")),
-		Preview: "apt-get remove -y " + strings.Join(quoted, " "),
+		Title:        "卸载选中的软件",
+		Confirm:      "会通过 apt-get remove 卸载当前勾选的已安装软件，继续吗？",
+		Command:      buildRootCommand("apt-get remove -y " + strings.Join(quoted, " ")),
+		Preview:      "apt-get remove -y " + strings.Join(quoted, " "),
+		RequiresRoot: true,
 	}
 }
 
@@ -202,9 +212,10 @@ func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
 			"nmcli con up "+connection,
 		)
 		return Action{
-			Title:   "保存网卡配置",
-			Confirm: fmt.Sprintf("会把网卡 %s 切换到 DHCP 并立即重连，继续吗？", cfg.Device),
-			Command: buildRootCommand(strings.Join(lines, "\n")),
+			Title:        "保存网卡配置",
+			Confirm:      fmt.Sprintf("会把网卡 %s 切换到 DHCP 并立即重连，继续吗？", cfg.Device),
+			Command:      buildRootCommand(strings.Join(lines, "\n")),
+			RequiresRoot: true,
 		}, nil
 	}
 
@@ -251,9 +262,10 @@ func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
 	lines = append(lines, "nmcli con up "+connection)
 
 	return Action{
-		Title:   "保存网卡配置",
-		Confirm: fmt.Sprintf("会把网卡 %s 改成静态地址 %s/%s，并立即重连，继续吗？", cfg.Device, address, mask),
-		Command: buildRootCommand(strings.Join(lines, "\n")),
+		Title:        "保存网卡配置",
+		Confirm:      fmt.Sprintf("会把网卡 %s 改成静态地址 %s/%s，并立即重连，继续吗？", cfg.Device, address, mask),
+		Command:      buildRootCommand(strings.Join(lines, "\n")),
+		RequiresRoot: true,
 	}, nil
 }
 
