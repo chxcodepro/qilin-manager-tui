@@ -367,7 +367,7 @@ func collectDisk(ctx context.Context, target string) DiskSection {
 		filesystems = []string{"未获取到磁盘挂载信息"}
 	}
 
-	lines := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
+	lines := cleanLines(runShell(ctx, fmt.Sprintf("timeout 8 du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
 	entries := make([]DiskEntry, 0, len(lines))
 	for _, line := range lines {
 		entry, ok := parseDiskEntry(line, target)
