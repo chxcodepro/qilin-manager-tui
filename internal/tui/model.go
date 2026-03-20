@@ -104,7 +104,7 @@ type model struct {
 	confirming       *pendingAction
 	consoleLogs      []consoleEntry
 	consoleExpanded  bool
-	consoleCursor    int
+	consoleCursor    int // -1 表示跟踪最新
 	maintainCursor   int
 	perfCursor       int
 }
@@ -122,9 +122,10 @@ func newModel(version string) model {
 		diskPath:     "/",
 		apps:         system.DefaultApps(),
 		selectedApps: map[string]bool{},
-		showHelp:     true,
-		loading:      true,
-		status:       "正在加载系统信息",
+		showHelp:      true,
+		loading:       true,
+		consoleCursor: -1,
+		status:        "正在加载系统信息",
 	}
 }
 
@@ -244,7 +245,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "`":
 			m.consoleExpanded = !m.consoleExpanded
+			if m.consoleExpanded {
+				m.consoleCursor = -1
+			}
 			return m, nil
+		}
+
+		if m.consoleExpanded && len(m.consoleLogs) > 0 {
+			switch msg.String() {
+			case "up", "k":
+				if m.consoleCursor < 0 {
+					m.consoleCursor = len(m.consoleLogs) - 2
+				} else if m.consoleCursor > 0 {
+					m.consoleCursor--
+				}
+				if m.consoleCursor < 0 {
+					m.consoleCursor = 0
+				}
+				return m, nil
+			case "down", "j":
+				if m.consoleCursor < 0 {
+					return m, nil
+				}
+				if m.consoleCursor < len(m.consoleLogs)-1 {
+					m.consoleCursor++
+				} else {
+					m.consoleCursor = -1
+				}
+				return m, nil
+			}
 		}
 
 		switch m.active {
@@ -587,7 +616,7 @@ func tickCmd() tea.Cmd {
 
 func execActionCmd(action system.Action) tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.Command("sh", "-lc", action.Command)
+		cmd := exec.Command("sh", "-c", action.Command)
 		out, err := cmd.CombinedOutput()
 		return actionDoneMsg{title: action.Title, command: action.Command, output: string(out), err: err}
 	}

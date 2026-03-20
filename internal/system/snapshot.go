@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -367,7 +368,7 @@ func collectDisk(ctx context.Context, target string) DiskSection {
 		filesystems = []string{"未获取到磁盘挂载信息"}
 	}
 
-	lines := cleanLines(runShell(ctx, fmt.Sprintf("timeout 8 du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
+	lines := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
 	entries := make([]DiskEntry, 0, len(lines))
 	for _, line := range lines {
 		entry, ok := parseDiskEntry(line, target)
@@ -504,7 +505,11 @@ func collectPackages(ctx context.Context, apps []AppInfo) PackageSection {
 }
 
 func runShell(ctx context.Context, script string) string {
-	cmd := exec.CommandContext(ctx, "sh", "-lc", script)
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil && text == "" {

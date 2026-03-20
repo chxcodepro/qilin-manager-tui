@@ -42,6 +42,11 @@ func detectKylinVersion() kylinVersion {
 		v.name = prettyName
 	}
 
+	versionID := strings.TrimSpace(parseOSRelease("VERSION_ID"))
+	if versionID != "" {
+		v.code = versionID
+	}
+
 	codename := strings.TrimSpace(parseOSRelease("VERSION_CODENAME"))
 	if codename != "" {
 		v.partner = codename
@@ -280,8 +285,8 @@ func maskToPrefix(mask string) (string, error) {
 		return "", fmt.Errorf("子网掩码格式不对")
 	}
 	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 || ones < 0 {
-		return "", fmt.Errorf("子网掩码格式不对")
+	if bits == 0 {
+		return "", fmt.Errorf("子网掩码不是合法的连续掩码")
 	}
 	return strconv.Itoa(ones), nil
 }
